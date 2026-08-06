@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CalendarDays, Hash, History, LayoutList, List, Menu, RefreshCw, ScanSearch, Search, Settings2, X } from 'lucide-react';
+import { CalendarDays, Hash, History, LayoutList, List, Menu, RefreshCw, ScanSearch, Search, Settings2, Target, X } from 'lucide-react';
 import './styles.css';
 
 const sumOf = (numbers) => numbers.reduce((sum, n) => sum + n, 0);
@@ -17,19 +17,16 @@ const densityOptions = [
 const periodOptions = [30, 50, 100, 200];
 const viewOptions = [
   { value: 'history', label: '完整历史', icon: List },
-  { value: 'tail-match', label: '末二追踪', icon: ScanSearch }
+  { value: 'tail-match', label: '末二追踪', icon: ScanSearch },
+  { value: 'position-match', label: '同位高重', icon: Target }
 ];
 
-function ResultRow({ row, newest = false, highlightTail = false }) {
-  const leadingNumbers = highlightTail ? row.numbers.slice(0, 3) : row.numbers;
-  const tailNumbers = row.numbers.slice(-2);
-  return <article className={`result-row${newest ? ' newest' : ''}${highlightTail ? ' match-row' : ''}`}>
+function ResultRow({ row, newest = false, highlightIndexes = [] }) {
+  const isMatch = highlightIndexes.length > 0;
+  return <article className={`result-row${newest ? ' newest' : ''}${isMatch ? ' match-row' : ''}`}>
     <div className="issue"><strong>{row.issue}</strong><small>{row.date?.slice(5).replace('-', '/')}</small></div>
     <div className="balls">
-      {leadingNumbers.map((number, index) => <span key={index}>{number}</span>)}
-      {highlightTail && <div className="tail-pair" aria-label={`匹配末二 ${tailNumbers.join(' ')}`}>
-        {tailNumbers.map((number, index) => <span key={index}>{number}</span>)}
-      </div>}
+      {row.numbers.map((number, index) => <span className={highlightIndexes.includes(index) ? 'matched-number' : ''} key={index}>{number}</span>)}
     </div>
     <strong className="sum">{sumOf(row.numbers)}</strong>
     <span className="parity">{parityOf(row.numbers)}</span>
@@ -50,7 +47,8 @@ function App() {
   async function load() {
     setStatus('loading');
     try {
-      const response = await fetch(`/api/results?limit=${periodCount}`);
+      const requestLimit = viewMode === 'history' ? periodCount : 50;
+      const response = await fetch(`/api/results?limit=${requestLimit}`);
       if (!response.ok) throw new Error('request failed');
       const data = await response.json();
       setRows(data.rows || []);
@@ -61,7 +59,7 @@ function App() {
     }
   }
 
-  useEffect(() => { load(); }, [periodCount]);
+  useEffect(() => { load(); }, [periodCount, viewMode]);
   useEffect(() => { localStorage.setItem('paile5-density', density); }, [density]);
   useEffect(() => { localStorage.setItem('paile5-period-count', String(periodCount)); }, [periodCount]);
   useEffect(() => { localStorage.setItem('paile5-view-mode', viewMode); }, [viewMode]);
@@ -71,24 +69,51 @@ function App() {
   }, [menuOpen]);
   const visibleRows = useMemo(() => rows.filter((row) => row.issue.includes(query.trim())), [rows, query]);
   const latest = rows[0];
-  const trackingGroups = useMemo(() => {
-    const recentRows = rows.slice(0, 30);
+  const tailTrackingGroups = useMemo(() => {
+    const recentRows = rows.slice(0, 31);
     if (recentRows.length < 3) return [];
     const latestTail = recentRows[0].numbers.slice(-2).join('-');
-    const groups = [{ id: 'latest', label: '最新三期', rows: recentRows.slice(0, 3), matchIssue: null }];
-    recentRows.forEach((row, index) => {
+    const groups = [{ id: 'latest', label: '最新三期', rows: recentRows.slice(0, 3), matchIssue: null, matchIndexes: [] }];
+    recentRows.slice(0, 30).forEach((row, index) => {
       const isMatch = row.numbers.slice(-2).join('-') === latestTail;
-      if (index >= 3 && index < recentRows.length - 1 && isMatch) {
+      if (index >= 3 && isMatch) {
         groups.push({
           id: `match-${row.issue}`,
           label: `同号命中 · ${row.issue}`,
           rows: recentRows.slice(index - 1, index + 2),
-          matchIssue: row.issue
+          matchIssue: row.issue,
+          matchIndexes: [3, 4]
         });
       }
     });
     return groups;
   }, [rows]);
+  const positionTrackingGroups = useMemo(() => {
+    const recentRows = rows.slice(0, 31);
+    if (recentRows.length < 4) return [];
+    const latestNumbers = recentRows[0].numbers;
+    const candidates = recentRows.slice(3, 30).map((row, offset) => {
+      const matchIndexes = row.numbers.reduce((indexes, number, index) => {
+        if (number === latestNumbers[index]) indexes.push(index);
+        return indexes;
+      }, []);
+      return { row, index: offset + 3, matchIndexes, score: matchIndexes.length };
+    });
+    const highestScore = Math.max(...candidates.map((candidate) => candidate.score));
+    const groups = [{ id: 'latest', label: '最新三期', rows: recentRows.slice(0, 3), matchIssue: null, matchIndexes: [] }];
+    candidates.filter((candidate) => candidate.score === highestScore).forEach((candidate) => {
+      groups.push({
+        id: `position-${candidate.row.issue}`,
+        label: `最高重复 · ${candidate.row.issue}`,
+        rows: recentRows.slice(candidate.index - 1, candidate.index + 2),
+        matchIssue: candidate.row.issue,
+        matchIndexes: candidate.matchIndexes,
+        score: candidate.score
+      });
+    });
+    return groups;
+  }, [rows]);
+  const activeTrackingGroups = viewMode === 'position-match' ? positionTrackingGroups : tailTrackingGroups;
 
   function changePeriodCount(count) {
     if (count === periodCount) {
@@ -129,7 +154,7 @@ function App() {
           <section className="setting-group">
             <div className="setting-heading">
               <span><ScanSearch size={17} />展示视图</span>
-              <small>切换完整列表或末二同号追踪</small>
+              <small>切换完整列表或不同匹配追踪</small>
             </div>
             <div className="view-control" role="group" aria-label="展示视图">
               {viewOptions.map((option) => {
@@ -199,28 +224,33 @@ function App() {
 
     <section className={`results-panel density-${density} view-${viewMode}`}>
       <div className="section-title">
-        <div>{viewMode === 'history' ? <History size={18} /> : <ScanSearch size={18} />}<h2>{viewMode === 'history' ? '历史开奖记录' : '末二同号追踪'}</h2></div>
+        <div>
+          {viewMode === 'history' ? <History size={18} /> : viewMode === 'tail-match' ? <ScanSearch size={18} /> : <Target size={18} />}
+          <h2>{viewMode === 'history' ? '历史开奖记录' : viewMode === 'tail-match' ? '末二同号追踪' : '同位高重追踪'}</h2>
+        </div>
         <div className="result-meta">
-          <strong>{status === 'loading' && !rows.length ? '加载中' : viewMode === 'history' ? `共 ${visibleRows.length} 期` : `共 ${Math.max(0, trackingGroups.length - 1)} 组命中`}</strong>
+          <strong>{status === 'loading' && !rows.length ? '加载中' : viewMode === 'history' ? `共 ${visibleRows.length} 期` : `共 ${Math.max(0, activeTrackingGroups.length - 1)} 组命中`}</strong>
           <small>{updatedAt ? `${new Date(updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 更新` : ''}</small>
         </div>
       </div>
       <div className="table-head"><span>期号</span><span>开奖号码</span><span>和值</span><span>奇偶比</span></div>
-      <div className={`result-list${viewMode === 'tail-match' ? ' tracking-list' : ''}`}>
+      <div className={`result-list${viewMode !== 'history' ? ' tracking-list' : ''}`}>
         {viewMode === 'history' && visibleRows.map((row, rowIndex) => <ResultRow row={row} newest={rowIndex === 0} key={row.issue} />)}
-        {viewMode === 'tail-match' && trackingGroups.map((group, groupIndex) => <section className="match-group" key={group.id}>
+        {viewMode !== 'history' && activeTrackingGroups.map((group, groupIndex) => <section className="match-group" key={group.id}>
           <div className="match-group-title">
             <strong>{group.label}</strong>
-            <span>{groupIndex === 0 ? `当前末二 · ${latest?.numbers.slice(-2).join(' ') || '--'}` : '前后各一期'}</span>
+            <span>{groupIndex === 0
+              ? viewMode === 'tail-match' ? `当前末二 · ${latest?.numbers.slice(-2).join(' ') || '--'}` : '五位逐项比对'
+              : viewMode === 'position-match' ? `相同 ${group.score}/5 位` : '前后各一期'}</span>
           </div>
           {group.rows.map((row, rowIndex) => <ResultRow
             row={row}
             newest={groupIndex === 0 && rowIndex === 0}
-            highlightTail={row.issue === group.matchIssue}
+            highlightIndexes={row.issue === group.matchIssue ? group.matchIndexes : []}
             key={`${group.id}-${row.issue}`}
           />)}
         </section>)}
-        {viewMode === 'tail-match' && trackingGroups.length === 1 && status !== 'loading' && <div className="empty"><p>近 30 期暂无末二同号</p></div>}
+        {viewMode !== 'history' && activeTrackingGroups.length === 1 && status !== 'loading' && <div className="empty"><p>近 30 期暂无可比对结果</p></div>}
         {status === 'error' && <div className="empty"><p>暂时无法获取开奖结果</p><button onClick={load}>重新加载</button></div>}
         {viewMode === 'history' && status !== 'error' && !visibleRows.length && status !== 'loading' && <div className="empty"><p>没有找到对应期号</p></div>}
         {status === 'loading' && !rows.length && Array.from({ length: 7 }).map((_, i) => <div className="skeleton" key={i} />)}

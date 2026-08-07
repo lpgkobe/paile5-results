@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CalendarDays, Hash, History, LayoutList, List, Menu, RefreshCw, ScanSearch, Search, Settings2, Target, X } from 'lucide-react';
+import { CalendarDays, ChevronDown, ChevronUp, Hash, History, LayoutList, List, Menu, RefreshCw, ScanSearch, Search, Settings2, Target, X } from 'lucide-react';
 import './styles.css';
+import { getLatestContext, getTrackingContext } from './tracking.js';
 
 const sumOf = (numbers) => numbers.reduce((sum, n) => sum + n, 0);
 const parityOf = (numbers) => {
@@ -33,6 +34,35 @@ function ResultRow({ row, newest = false, highlightIndexes = [] }) {
   </article>;
 }
 
+function TrackingGroup({ group, latest, viewMode, isLatest = false, expanded = false, onToggle }) {
+  const visibleRows = expanded ? group.expandedRows : group.rows;
+  return <section className="match-group">
+    <div className="match-group-title">
+      <strong>{isLatest && expanded ? '最新五期' : group.label}</strong>
+      <span>{isLatest
+        ? viewMode === 'tail-match' ? `当前末二 · ${latest?.numbers.slice(-2).join(' ') || '--'}` : '五位逐项比对'
+        : viewMode === 'position-match' ? `相同 ${group.score}/5 位` : '前后各一期'}</span>
+    </div>
+    {visibleRows.map((row, rowIndex) => <ResultRow
+      row={row}
+      newest={isLatest && rowIndex === 0}
+      highlightIndexes={row.issue === group.matchIssue ? group.matchIndexes : []}
+      key={`${group.id}-${row.issue}`}
+    />)}
+    {group.expandedRows.length > group.rows.length && <button
+      type="button"
+      className="match-group-toggle"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      {isLatest
+        ? expanded ? '收起至最新 3 期' : '展开至最新 5 期'
+        : expanded ? '收起前后期数' : '展开前后各 3 期'}
+    </button>}
+  </section>;
+}
+
 function App() {
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState('loading');
@@ -40,6 +70,7 @@ function App() {
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [expandedTrackingGroups, setExpandedTrackingGroups] = useState(() => new Set());
   const [density, setDensity] = useState(() => localStorage.getItem('paile5-density') || 'relaxed');
   const [periodCount, setPeriodCount] = useState(() => Number(localStorage.getItem('paile5-period-count')) || 30);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem('paile5-view-mode') || 'history');
@@ -63,6 +94,7 @@ function App() {
   useEffect(() => { localStorage.setItem('paile5-density', density); }, [density]);
   useEffect(() => { localStorage.setItem('paile5-period-count', String(periodCount)); }, [periodCount]);
   useEffect(() => { localStorage.setItem('paile5-view-mode', viewMode); }, [viewMode]);
+  useEffect(() => { setExpandedTrackingGroups(new Set()); }, [viewMode, rows[0]?.issue]);
   useEffect(() => {
     document.body.classList.toggle('drawer-open', menuOpen);
     return () => document.body.classList.remove('drawer-open');
@@ -70,17 +102,20 @@ function App() {
   const visibleRows = useMemo(() => rows.filter((row) => row.issue.includes(query.trim())), [rows, query]);
   const latest = rows[0];
   const tailTrackingGroups = useMemo(() => {
-    const recentRows = rows.slice(0, 31);
+    const recentRows = rows.slice(0, 33);
     if (recentRows.length < 3) return [];
     const latestTail = recentRows[0].numbers.slice(-2).join('-');
-    const groups = [{ id: 'latest', label: '最新三期', rows: recentRows.slice(0, 3), matchIssue: null, matchIndexes: [] }];
+    const latestContext = getLatestContext(recentRows);
+    const groups = [{ id: 'latest', label: '最新三期', rows: latestContext.collapsedRows, expandedRows: latestContext.expandedRows, matchIssue: null, matchIndexes: [] }];
     recentRows.slice(0, 30).forEach((row, index) => {
       const isMatch = row.numbers.slice(-2).join('-') === latestTail;
       if (index >= 3 && isMatch) {
+        const context = getTrackingContext(recentRows, index);
         groups.push({
           id: `match-${row.issue}`,
           label: `同号命中 · ${row.issue}`,
-          rows: recentRows.slice(index - 1, index + 2),
+          rows: context.collapsedRows,
+          expandedRows: context.expandedRows,
           matchIssue: row.issue,
           matchIndexes: [3, 4]
         });
@@ -89,7 +124,7 @@ function App() {
     return groups;
   }, [rows]);
   const positionTrackingGroups = useMemo(() => {
-    const recentRows = rows.slice(0, 31);
+    const recentRows = rows.slice(0, 33);
     if (recentRows.length < 4) return [];
     const latestNumbers = recentRows[0].numbers;
     const candidates = recentRows.slice(3, 30).map((row, offset) => {
@@ -100,12 +135,15 @@ function App() {
       return { row, index: offset + 3, matchIndexes, score: matchIndexes.length };
     });
     const highestScore = Math.max(...candidates.map((candidate) => candidate.score));
-    const groups = [{ id: 'latest', label: '最新三期', rows: recentRows.slice(0, 3), matchIssue: null, matchIndexes: [] }];
+    const latestContext = getLatestContext(recentRows);
+    const groups = [{ id: 'latest', label: '最新三期', rows: latestContext.collapsedRows, expandedRows: latestContext.expandedRows, matchIssue: null, matchIndexes: [] }];
     candidates.filter((candidate) => candidate.score === highestScore).forEach((candidate) => {
+      const context = getTrackingContext(recentRows, candidate.index);
       groups.push({
         id: `position-${candidate.row.issue}`,
         label: `最高重复 · ${candidate.row.issue}`,
-        rows: recentRows.slice(candidate.index - 1, candidate.index + 2),
+        rows: context.collapsedRows,
+        expandedRows: context.expandedRows,
         matchIssue: candidate.row.issue,
         matchIndexes: candidate.matchIndexes,
         score: candidate.score
@@ -127,9 +165,19 @@ function App() {
 
   function changeViewMode(mode) {
     setViewMode(mode);
+    setExpandedTrackingGroups(new Set());
     setQuery('');
     setSearchOpen(false);
     setMenuOpen(false);
+  }
+
+  function toggleTrackingGroup(groupId) {
+    setExpandedTrackingGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
   }
 
   return <main className="app-shell">
@@ -236,20 +284,15 @@ function App() {
       <div className="table-head"><span>期号</span><span>开奖号码</span><span>和值</span><span>奇偶比</span></div>
       <div className={`result-list${viewMode !== 'history' ? ' tracking-list' : ''}`}>
         {viewMode === 'history' && visibleRows.map((row, rowIndex) => <ResultRow row={row} newest={rowIndex === 0} key={row.issue} />)}
-        {viewMode !== 'history' && activeTrackingGroups.map((group, groupIndex) => <section className="match-group" key={group.id}>
-          <div className="match-group-title">
-            <strong>{group.label}</strong>
-            <span>{groupIndex === 0
-              ? viewMode === 'tail-match' ? `当前末二 · ${latest?.numbers.slice(-2).join(' ') || '--'}` : '五位逐项比对'
-              : viewMode === 'position-match' ? `相同 ${group.score}/5 位` : '前后各一期'}</span>
-          </div>
-          {group.rows.map((row, rowIndex) => <ResultRow
-            row={row}
-            newest={groupIndex === 0 && rowIndex === 0}
-            highlightIndexes={row.issue === group.matchIssue ? group.matchIndexes : []}
-            key={`${group.id}-${row.issue}`}
-          />)}
-        </section>)}
+        {viewMode !== 'history' && activeTrackingGroups.map((group, groupIndex) => <TrackingGroup
+          group={group}
+          latest={latest}
+          viewMode={viewMode}
+          isLatest={groupIndex === 0}
+          expanded={expandedTrackingGroups.has(group.id)}
+          onToggle={() => toggleTrackingGroup(group.id)}
+          key={group.id}
+        />)}
         {viewMode !== 'history' && activeTrackingGroups.length === 1 && status !== 'loading' && <div className="empty"><p>近 30 期暂无可比对结果</p></div>}
         {status === 'error' && <div className="empty"><p>暂时无法获取开奖结果</p><button onClick={load}>重新加载</button></div>}
         {viewMode === 'history' && status !== 'error' && !visibleRows.length && status !== 'loading' && <div className="empty"><p>没有找到对应期号</p></div>}

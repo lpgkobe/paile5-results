@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CalendarDays, ChevronDown, ChevronUp, Hash, History, LayoutList, List, Menu, RefreshCw, ScanSearch, Search, Settings2, Target, X } from 'lucide-react';
 import './styles.css';
-import { getLatestContext, getTrackingContext } from './tracking.js';
+import { getLatestContext, getTailTrackingGroups, getTrackingContext } from './tracking.js';
 
 const sumOf = (numbers) => numbers.reduce((sum, n) => sum + n, 0);
 const parityOf = (numbers) => {
@@ -74,19 +74,23 @@ function App() {
   const [density, setDensity] = useState(() => localStorage.getItem('paile5-density') || 'relaxed');
   const [periodCount, setPeriodCount] = useState(() => Number(localStorage.getItem('paile5-period-count')) || 30);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem('paile5-view-mode') || 'history');
+  const loadRequestId = useRef(0);
 
   async function load() {
+    const requestId = ++loadRequestId.current;
     setStatus('loading');
     try {
-      const requestLimit = viewMode === 'history' ? periodCount : 50;
-      const response = await fetch(`/api/results?limit=${requestLimit}`);
+      const requestLimit = viewMode === 'position-match' ? 50 : periodCount;
+      const contextQuery = viewMode === 'tail-match' ? '&context=3' : '';
+      const response = await fetch(`/api/results?limit=${requestLimit}${contextQuery}`);
       if (!response.ok) throw new Error('request failed');
       const data = await response.json();
+      if (requestId !== loadRequestId.current) return;
       setRows(data.rows || []);
       setUpdatedAt(data.updatedAt);
       setStatus(data.source);
     } catch {
-      setStatus('error');
+      if (requestId === loadRequestId.current) setStatus('error');
     }
   }
 
@@ -94,35 +98,14 @@ function App() {
   useEffect(() => { localStorage.setItem('paile5-density', density); }, [density]);
   useEffect(() => { localStorage.setItem('paile5-period-count', String(periodCount)); }, [periodCount]);
   useEffect(() => { localStorage.setItem('paile5-view-mode', viewMode); }, [viewMode]);
-  useEffect(() => { setExpandedTrackingGroups(new Set()); }, [viewMode, rows[0]?.issue]);
+  useEffect(() => { setExpandedTrackingGroups(new Set()); }, [periodCount, viewMode, rows[0]?.issue]);
   useEffect(() => {
     document.body.classList.toggle('drawer-open', menuOpen);
     return () => document.body.classList.remove('drawer-open');
   }, [menuOpen]);
   const visibleRows = useMemo(() => rows.filter((row) => row.issue.includes(query.trim())), [rows, query]);
   const latest = rows[0];
-  const tailTrackingGroups = useMemo(() => {
-    const recentRows = rows.slice(0, 33);
-    if (recentRows.length < 3) return [];
-    const latestTail = recentRows[0].numbers.slice(-2).join('-');
-    const latestContext = getLatestContext(recentRows);
-    const groups = [{ id: 'latest', label: '最新三期', rows: latestContext.collapsedRows, expandedRows: latestContext.expandedRows, matchIssue: null, matchIndexes: [] }];
-    recentRows.slice(0, 30).forEach((row, index) => {
-      const isMatch = row.numbers.slice(-2).join('-') === latestTail;
-      if (index >= 3 && isMatch) {
-        const context = getTrackingContext(recentRows, index);
-        groups.push({
-          id: `match-${row.issue}`,
-          label: `同号命中 · ${row.issue}`,
-          rows: context.collapsedRows,
-          expandedRows: context.expandedRows,
-          matchIssue: row.issue,
-          matchIndexes: [3, 4]
-        });
-      }
-    });
-    return groups;
-  }, [rows]);
+  const tailTrackingGroups = useMemo(() => getTailTrackingGroups(rows, periodCount), [rows, periodCount]);
   const positionTrackingGroups = useMemo(() => {
     const recentRows = rows.slice(0, 33);
     if (recentRows.length < 4) return [];
@@ -235,7 +218,7 @@ function App() {
           <section className="setting-group">
             <div className="setting-heading">
               <span><Hash size={17} />显示期数</span>
-              <small>选择需要加载的历史开奖数量</small>
+              <small>选择历史列表和末二追踪的期数范围</small>
             </div>
             <div className="period-control" role="group" aria-label="显示期数">
               {periodOptions.map((count) => <button
@@ -277,7 +260,7 @@ function App() {
           <h2>{viewMode === 'history' ? '历史开奖记录' : viewMode === 'tail-match' ? '末二同号追踪' : '同位高重追踪'}</h2>
         </div>
         <div className="result-meta">
-          <strong>{status === 'loading' && !rows.length ? '加载中' : viewMode === 'history' ? `共 ${visibleRows.length} 期` : `共 ${Math.max(0, activeTrackingGroups.length - 1)} 组命中`}</strong>
+          <strong>{status === 'loading' && !rows.length ? '加载中' : viewMode === 'history' ? `共 ${visibleRows.length} 期` : `${viewMode === 'tail-match' ? `近 ${periodCount} 期 · ` : ''}共 ${Math.max(0, activeTrackingGroups.length - 1)} 组命中`}</strong>
           <small>{updatedAt ? `${new Date(updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 更新` : ''}</small>
         </div>
       </div>
@@ -293,7 +276,7 @@ function App() {
           onToggle={() => toggleTrackingGroup(group.id)}
           key={group.id}
         />)}
-        {viewMode !== 'history' && activeTrackingGroups.length === 1 && status !== 'loading' && <div className="empty"><p>近 30 期暂无可比对结果</p></div>}
+        {viewMode !== 'history' && activeTrackingGroups.length === 1 && status !== 'loading' && status !== 'error' && <div className="empty"><p>{viewMode === 'tail-match' ? `近 ${periodCount} 期暂无末二同号命中` : '近 30 期暂无可比对结果'}</p></div>}
         {status === 'error' && <div className="empty"><p>暂时无法获取开奖结果</p><button onClick={load}>重新加载</button></div>}
         {viewMode === 'history' && status !== 'error' && !visibleRows.length && status !== 'loading' && <div className="empty"><p>没有找到对应期号</p></div>}
         {status === 'loading' && !rows.length && Array.from({ length: 7 }).map((_, i) => <div className="skeleton" key={i} />)}

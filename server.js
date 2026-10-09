@@ -27,11 +27,13 @@ function normalize(payload) {
 app.get('/api/results', async (req, res) => {
   const requestedLimit = Number(req.query.limit);
   const limit = [30, 50, 100, 200].includes(requestedLimit) ? requestedLimit : 30;
+  const contextPeriods = Number(req.query.context) === 3 ? 3 : 0;
+  const fetchLimit = limit + contextPeriods;
   const headers = { 'user-agent': 'Mozilla/5.0', accept: 'application/json', referer: 'https://www.sporttery.cn/' };
 
   try {
-    const pageSize = Math.min(limit, 100);
-    const pages = Math.ceil(limit / pageSize);
+    const pageSize = Math.min(fetchLimit, 100);
+    const pages = Math.ceil(fetchLimit / pageSize);
     const officialRows = [];
     for (let pageNo = 1; pageNo <= pages; pageNo += 1) {
       const url = `https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry?gameNo=350133&provinceId=0&pageSize=${pageSize}&isVerify=1&pageNo=${pageNo}`;
@@ -43,7 +45,7 @@ app.get('/api/results', async (req, res) => {
     }
     const uniqueRows = [...new Map(officialRows.map((row) => [row.issue, row])).values()];
     if (uniqueRows.length) {
-      return res.json({ source: 'live', updatedAt: new Date().toISOString(), rows: uniqueRows.slice(0, limit) });
+      return res.json({ source: 'live', updatedAt: new Date().toISOString(), rows: uniqueRows.slice(0, fetchLimit) });
     }
   } catch { /* try the secondary public source */ }
 
@@ -54,10 +56,10 @@ app.get('/api/results', async (req, res) => {
     });
     if (response.ok) {
       const rows = normalize(await response.json());
-      if (rows.length) return res.json({ source: 'live', updatedAt: new Date().toISOString(), rows: rows.slice(0, limit) });
+      if (rows.length) return res.json({ source: 'live', updatedAt: new Date().toISOString(), rows: rows.slice(0, fetchLimit) });
     }
   } catch { /* use local fallback */ }
-  res.json({ source: 'fallback', updatedAt: new Date().toISOString(), rows: demo.slice(0, limit) });
+  res.json({ source: 'fallback', updatedAt: new Date().toISOString(), rows: demo.slice(0, fetchLimit) });
 });
 
 if (process.argv.includes('--production') && existsSync(path.join(root, 'dist'))) {
